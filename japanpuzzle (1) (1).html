@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>日本地図パズル</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700;900&family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ocean-deep:   #020d1a;
+  --neon-cyan:    #00e5ff;
+  --neon-blue:    #2979ff;
+  --neon-pink:    #ff4081;
+  --placed-color: #00e676;
+  --ui-glass:     rgba(4,22,40,0.90);
+  --text-primary: #e0f7fa;
+  --text-dim:     #546e7a;
+  --grid-line:    rgba(0,229,255,0.05);
+  --tray-h:       140px;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { width:100%; height:100%; overflow:hidden; touch-action:none;
+  user-select:none; -webkit-user-select:none;
+  font-family:'Zen Kaku Gothic New',sans-serif;
+  background:var(--ocean-deep);
+}
+body::before {
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background-image:
+    linear-gradient(var(--grid-line) 1px,transparent 1px),
+    linear-gradient(90deg,var(--grid-line) 1px,transparent 1px);
+  background-size:48px 48px;
+}
+body::after {
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:
+    radial-gradient(ellipse 60% 40% at 20% 80%,rgba(41,121,255,.12) 0%,transparent 70%),
+    radial-gradient(ellipse 50% 35% at 80% 20%,rgba(0,229,255,.08) 0%,transparent 70%);
+}
+
+/* ── 地図エリア ── */
+#map-area {
+  position:absolute; left:0; right:0; top:0; bottom:var(--tray-h);
+  overflow:hidden; z-index:1; touch-action:none;
+}
+#map-svg { display:block; width:100%; height:100%; }
+.bg-map   { fill:#0a2a40; stroke:rgba(0,229,255,.18); stroke-width:.5; }
+.placed-path { stroke:rgba(255,255,255,.2); stroke-width:.5; cursor:pointer; }
+
+/* ── トレイ ── */
+#tray {
+  position:absolute; left:0; right:0; bottom:0; height:var(--tray-h);
+  background:rgba(2,13,26,.88);
+  border-top:1px solid rgba(0,229,255,.15);
+  backdrop-filter:blur(12px); z-index:10;
+  display:flex; align-items:center;
+}
+#tray-inner {
+  display:flex; align-items:center; gap:8px;
+  padding:0 14px; overflow-x:auto; overflow-y:hidden;
+  width:100%; height:100%; scrollbar-width:none;
+}
+#tray-inner::-webkit-scrollbar { display:none; }
+
+/* ── ピースカード ── */
+.piece-card {
+  flex-shrink:0; width:86px; height:112px;
+  background:rgba(255,64,129,.07);
+  border:1px solid rgba(255,64,129,.3);
+  border-radius:12px;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:4px;
+  cursor:grab; touch-action:none;
+  transition:opacity .2s, border-color .2s;
+}
+.piece-card.dragging-src { opacity:0.3; border-color:rgba(255,64,129,.1); }
+.piece-card svg { width:60px; height:60px; overflow:visible; display:block; }
+.piece-card .pname {
+  font-size:.6rem; font-weight:900; color:var(--text-primary);
+  letter-spacing:.03em; text-align:center; line-height:1.2; padding:0 4px;
+}
+
+/* ── ドラッグゴースト ── */
+#drag-ghost {
+  position:fixed; z-index:300; pointer-events:none;
+  display:none; width:100px; height:100px;
+  transform:translate(-50%,-50%);
+  filter:drop-shadow(0 0 14px rgba(255,64,129,.9));
+}
+#drag-ghost svg { width:100px; height:100px; overflow:visible; display:block; }
+
+/* ── ドロップゾーンガイド ── */
+#drop-guide {
+  position:absolute; inset:0; pointer-events:none; z-index:2;
+  border:2px dashed rgba(0,229,255,0); transition:border-color .25s;
+  border-radius:0;
+}
+#drop-guide.active { border-color:rgba(0,229,255,.4); }
+
+/* ── UI パネル ── */
+#ui {
+  position:absolute; top:14px; left:14px; z-index:20;
+  background:var(--ui-glass); backdrop-filter:blur(14px);
+  padding:12px 16px; border-radius:14px;
+  border:1px solid rgba(0,229,255,.18);
+  box-shadow:0 8px 32px rgba(0,0,0,.6);
+  min-width:158px;
+}
+.ui-header { font-family:'Orbitron',monospace; font-size:.52rem;
+  letter-spacing:.18em; color:var(--neon-cyan); text-transform:uppercase;
+  margin-bottom:6px; opacity:.7; }
+.score-row { display:flex; align-items:baseline; gap:4px; margin-bottom:6px; }
+.score-label { font-size:.68rem; color:var(--text-dim); }
+.score-value { font-family:'Orbitron',monospace; font-size:1.55rem; font-weight:700;
+  color:var(--text-primary); line-height:1; }
+.score-total { font-family:'Orbitron',monospace; font-size:.73rem; color:var(--text-dim); }
+.progress-track { height:3px; background:rgba(255,255,255,.06); border-radius:2px;
+  margin-bottom:7px; overflow:hidden; }
+.progress-fill { height:100%; width:0%;
+  background:linear-gradient(90deg,var(--neon-blue),var(--neon-cyan));
+  border-radius:2px; transition:width .5s cubic-bezier(.4,0,.2,1);
+  box-shadow:0 0 8px var(--neon-cyan); }
+#message { font-size:.8rem; color:var(--text-primary); font-weight:700;
+  line-height:1.4; min-height:1.2em; }
+#message.hint { color:var(--neon-cyan); }
+#message.ok   { color:var(--placed-color); }
+
+/* ── はじめからボタン ── */
+#btn-restart {
+  position:absolute; top:14px; right:14px; z-index:20;
+  background:var(--ui-glass); backdrop-filter:blur(14px);
+  padding:9px 13px; border-radius:10px;
+  border:1px solid rgba(255,64,129,.35);
+  font-size:.8rem; font-weight:700; color:#ff8ab4;
+  cursor:pointer; transition:all .2s; touch-action:manipulation;
+}
+#btn-restart:hover { background:rgba(255,64,129,.12); }
+
+/* ── ズームヒント ── */
+#zoom-hint {
+  position:absolute; top:14px; left:50%; transform:translateX(-50%);
+  z-index:20; pointer-events:none;
+  background:rgba(4,22,40,.7); padding:5px 12px; border-radius:100px;
+  border:1px solid rgba(0,229,255,.1);
+  font-size:.58rem; letter-spacing:.08em; color:rgba(0,229,255,.45);
+  white-space:nowrap;
+}
+
+/* ── 豆知識カード ── */
+#info-backdrop {
+  display:none; position:fixed; inset:0; z-index:50;
+  background:rgba(2,13,26,.6); backdrop-filter:blur(4px);
+}
+#info-backdrop.show { display:block; }
+#info-card {
+  position:fixed; left:50%; bottom:0;
+  transform:translateX(-50%) translateY(100%);
+  z-index:51; width:min(440px,96vw);
+  background:#05192b;
+  border:1px solid rgba(0,229,255,.22); border-bottom:none;
+  border-radius:20px 20px 0 0;
+  box-shadow:0 -8px 40px rgba(0,0,0,.7);
+  transition:transform .38s cubic-bezier(.32,1,.4,1); overflow:hidden;
+}
+#info-card.show { transform:translateX(-50%) translateY(0); }
+.card-handle { width:40px; height:4px; background:rgba(255,255,255,.15);
+  border-radius:2px; margin:14px auto 0; }
+.card-pref-name { font-size:1.4rem; font-weight:900; color:var(--text-primary);
+  padding:14px 22px 4px; }
+.card-pref-en { font-family:'Orbitron',monospace; font-size:.56rem;
+  letter-spacing:.16em; color:var(--neon-cyan); opacity:.7; padding:0 22px 14px; }
+.card-divider { height:1px; background:rgba(0,229,255,.1); margin:0 22px; }
+.card-body { padding:16px 22px 24px; }
+.card-section-title { font-size:.78rem; font-weight:900; color:var(--neon-cyan);
+  opacity:.85; margin-bottom:7px; }
+.card-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+.chip { padding:5px 12px; border-radius:100px; font-size:.82rem; font-weight:700; }
+.chip.food  { border:1px solid rgba(255,167,38,.35); background:rgba(255,167,38,.08); color:#ffcc80; }
+.chip.sight { border:1px solid rgba(41,121,255,.4);  background:rgba(41,121,255,.1);  color:#90caf9; }
+.card-trivia-text { font-size:.9rem; line-height:1.8; color:#90a4ae; margin-top:4px; }
+.card-close {
+  display:block; width:calc(100% - 44px); margin:0 22px 22px; padding:13px;
+  border:1px solid rgba(0,229,255,.22); background:transparent; border-radius:10px;
+  font-size:.9rem; font-weight:700; color:var(--neon-cyan); cursor:pointer;
+  touch-action:manipulation;
+}
+.card-close:hover { background:rgba(0,229,255,.1); }
+
+/* ── クリア ── */
+#clear-overlay {
+  display:none; position:fixed; inset:0; z-index:100;
+  background:rgba(2,13,26,.92); backdrop-filter:blur(8px);
+  flex-direction:column; align-items:center; justify-content:center; gap:18px;
+}
+#clear-overlay.show { display:flex; animation:fadeIn .8s ease; }
+.clear-title { font-family:'Orbitron',monospace;
+  font-size:clamp(1.8rem,8vw,3.5rem); font-weight:700;
+  color:var(--placed-color); letter-spacing:.1em;
+  text-shadow:0 0 40px rgba(0,230,118,.6);
+  animation:pulse 2s ease-in-out infinite; }
+.clear-sub  { font-size:1rem; color:var(--text-dim); text-align:center; }
+.clear-score { font-family:'Orbitron',monospace; font-size:1.8rem;
+  color:var(--neon-cyan); text-shadow:0 0 20px var(--neon-cyan); }
+.btn-clear-restart {
+  padding:14px 42px; background:transparent;
+  border:1px solid var(--neon-cyan); color:var(--neon-cyan);
+  font-size:1rem; font-weight:900; letter-spacing:.1em;
+  border-radius:10px; cursor:pointer; transition:all .2s;
+  touch-action:manipulation;
+}
+.btn-clear-restart:hover { background:rgba(0,229,255,.1); }
+
+@keyframes fadeIn { from{opacity:0;transform:scale(.97)} to{opacity:1;transform:scale(1)} }
+@keyframes pulse  { 0%,100%{opacity:1} 50%{opacity:.7} }
+</style>
+</head>
+<body>
+
+<div id="map-area">
+  <svg id="map-svg"></svg>
+  <div id="drop-guide"></div>
+</div>
+
+<div id="tray"><div id="tray-inner"></div></div>
+
+<div id="drag-ghost"><svg id="ghost-svg" viewBox="0 0 100 100"></svg></div>
+
+<div id="ui">
+  <div class="ui-header">Japan Map Puzzle</div>
+  <div class="score-row">
+    <span class="score-label">せいかい</span>
+    <span class="score-value" id="score">0</span>
+    <span class="score-total">/ 47</span>
+  </div>
+  <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
+  <div id="message">よみこみ中…</div>
+</div>
+<button id="btn-restart" onclick="location.reload()">🔄 はじめから</button>
+<div id="zoom-hint">2本ゆびでかくだい・ちぢみ</div>
+
+<div id="info-backdrop"></div>
+<div id="info-card">
+  <div class="card-handle"></div>
+  <div class="card-pref-name" id="card-name">―</div>
+  <div class="card-pref-en"   id="card-en">―</div>
+  <div class="card-divider"></div>
+  <div class="card-body">
+    <div class="card-section-title">🍜 名ぶつグルメ</div>
+    <div class="card-chips" id="card-foods"></div>
+    <div class="card-section-title">🗺️ かんこうスポット</div>
+    <div class="card-chips" id="card-sights"></div>
+    <div class="card-section-title">💡 豆ちしき</div>
+    <div class="card-trivia-text" id="card-trivia"></div>
+  </div>
+  <button class="card-close" id="card-close-btn">とじる</button>
+</div>
+
+<div id="clear-overlay">
+  <div class="clear-title">COMPLETE！</div>
+  <div class="clear-sub">47都道府県ぜんぶ　せいかい！🎉</div>
+  <div class="clear-score">47 / 47</div>
+  <button class="btn-clear-restart" onclick="location.reload()">もう一どあそぶ</button>
+</div>
+
+<script>
+// ════════════════════════════════════════
+//  豆知識データ
+// ════════════════════════════════════════
+const PREF_INFO = {
+  "北海道":  { en:"HOKKAIDO",  foods:["ジンギスカン","みそラーメン","いくら丼","ザンギ"],       sights:["函館山","小樽うんが","富良野ラベンダー","知床"],    trivia:"日本でいちばん広い都道府県。広さは日本ぜんたいの約5分の1もあるよ！" },
+  "青森県":  { en:"AOMORI",    foods:["りんご","ホタテ","せんべい汁"],                           sights:["弘前城","奥入瀬けいりゅう","三内丸山いせき"],      trivia:"ねぶた祭りには毎年300万人以上があつまる東北でゆうめいなお祭りだよ。" },
+  "岩手県":  { en:"IWATE",     foods:["わんこそば","盛岡れいめん","じゃじゃ麺"],                  sights:["中尊寺金色堂","浄土ヶ浜","龍泉洞"],               trivia:"北海道の次に広い県。きれいな山や川がたくさんある自然豊かな場所だよ。" },
+  "宮城県":  { en:"MIYAGI",    foods:["牛タン","ずんだもち","笹かまぼこ"],                        sights:["松島","仙台城あと","秋保温泉"],                    trivia:"松島は日本三景のひとつ。海に260こ以上の島がうかんでいる絶景だよ。" },
+  "秋田県":  { en:"AKITA",     foods:["きりたんぽ","稲庭うどん","横手やきそば"],                  sights:["田沢湖","角館ぶけやしき","男鹿半島"],              trivia:"なまはげはユネスコという世界のきかんに大切な文化としてみとめられているよ。" },
+  "山形県":  { en:"YAMAGATA",  foods:["芋煮","さくらんぼ","冷やしラーメン"],                      sights:["山寺（立石寺）","蔵王温泉","銀山温泉"],            trivia:"さくらんぼの生産量は日本一！全国の約70%が山形県でとれるよ。" },
+  "福島県":  { en:"FUKUSHIMA", foods:["喜多方ラーメン","ソースカツ丼","桃"],                      sights:["鶴ヶ城","猪苗代湖","大内宿"],                     trivia:"モモの生産量は全国2位。3つのちいきに分かれているよ。" },
+  "茨城県":  { en:"IBARAKI",   foods:["水戸なっとう","あんこう鍋","常陸牛"],                      sights:["袋田の滝","偕楽園","筑波山"],                      trivia:"なっとうの食べる量が日本一！茨城県の人はなっとうがだいすきなんだね。" },
+  "栃木県":  { en:"TOCHIGI",   foods:["宇都宮ぎょうざ","日光ゆば","いちご"],                      sights:["日光東照宮","那須高原","足利フラワーパーク"],       trivia:"いちごの生産量は50年以上ずっと日本一！「とちおとめ」が有名だよ。" },
+  "群馬県":  { en:"GUNMA",     foods:["上州牛","水沢うどん","こんにゃく料理"],                     sights:["草津温泉","伊香保温泉","富岡製糸場"],              trivia:"草津温泉はわき出るお湯の量が日本一。世界中から観光客がやってくるよ。" },
+  "埼玉県":  { en:"SAITAMA",   foods:["冷汁うどん","草加せんべい","深谷ネギ"],                     sights:["川越のくらづくり","秩父","鉄道博物館"],            trivia:"「海なし県」だけど人口は全国5位！都会だね。" },
+  "千葉県":  { en:"CHIBA",     foods:["落花生","勝浦タンタンメン","なめろう"],                     sights:["成田山新勝寺","鴨川シーワールド","犬吠埼灯台"],    trivia:"東京ディズニーリゾートは実は千葉県浦安市にあるんだよ！しってた？" },
+  "東京都":  { en:"TOKYO",     foods:["もんじゃ焼き","深川めし","東京ラーメン"],                   sights:["浅草寺","東京スカイツリー","渋谷スクランブル交差点"], trivia:"人口が約1400万人の日本の首都。世界でもゆうめいな大きな都市だよ。" },
+  "神奈川県":{ en:"KANAGAWA",  foods:["シウマイ","サンマーメン","鎌倉野菜"],                       sights:["鎌倉大仏","横浜中華街","箱根温泉","江の島"],       trivia:"横浜は昔、外国との貿易がさかんだった港町だよ。" },
+  "新潟県":  { en:"NIIGATA",   foods:["へぎそば","タレかつ丼","笹だんご","コシヒカリ"],             sights:["佐渡島","越後湯沢","弥彦神社"],                    trivia:"おいしいお米「コシヒカリ」の産地。日本酒の蔵元の数も全国いちばんだよ。" },
+  "富山県":  { en:"TOYAMA",    foods:["ます寿し","ホタルイカ","白エビ"],                           sights:["立山黒部アルペンルート","氷見"],                   trivia:"立山は高さ3000m以上の山々がならぶ、日本の有名な山のひとつだよ。" },
+  "石川県":  { en:"ISHIKAWA",  foods:["のどぐろ","治部煮","金沢カレー"],                           sights:["兼六園","金沢21世紀美術館","輪島朝市"],            trivia:"金沢箔という金ぱくが有名。日本の金ぱくの99%が金沢産だよ！" },
+  "福井県":  { en:"FUKUI",     foods:["越前ガニ","ソースカツ丼","羽二重もち"],                     sights:["東尋坊","永平寺","恐竜博物館"],                    trivia:"恐竜のかせきが日本一たくさん見つかる「恐竜王国ふくい」だよ。" },
+  "山梨県":  { en:"YAMANASHI", foods:["ほうとう","吉田うどん","信玄もち"],                         sights:["富士山（五合目）","河口湖","昇仙峡"],              trivia:"ぶどう・もも・すももの生産量がどれも全国1位！くだもの王国だよ。" },
+  "長野県":  { en:"NAGANO",    foods:["信州そば","おやき","馬さし","野沢菜づけ"],                   sights:["善光寺","松本城","上高地","軽井沢"],               trivia:"8つの県と接している日本でいちばん多くの県にかこまれた県だよ。" },
+  "岐阜県":  { en:"GIFU",      foods:["飛騨牛","鶏ちゃん","みたらしだんご"],                       sights:["白川郷","高山古い町並み","下呂温泉"],              trivia:"白川郷の合掌造りはユネスコの世界遺産に登録されているよ。" },
+  "静岡県":  { en:"SHIZUOKA",  foods:["うなぎ","桜エビ","富士宮やきそば","わさび"],                 sights:["富士山","三保の松原","熱海温泉"],                  trivia:"緑茶の生産量は全国1位！日本のお茶の多くは静岡でつくられているよ。" },
+  "愛知県":  { en:"AICHI",     foods:["みそカツ","ひつまぶし","手羽先","きしめん"],                 sights:["名古屋城","熱田神宮","レゴランド"],                trivia:"トヨタ自動車の本拠地がある県。車をつくる工場がたくさんあるよ。" },
+  "三重県":  { en:"MIE",       foods:["伊勢エビ","松阪牛","赤福"],                                 sights:["伊勢神宮","鳥羽水族館","夫婦岩"],                  trivia:"伊勢神宮は日本でもっとも大切な神社のひとつ。20年ごとにたてなおすんだよ。" },
+  "滋賀県":  { en:"SHIGA",     foods:["近江牛","鮒ずし","赤こんにゃく"],                           sights:["彦根城","琵琶湖","比叡山"],                        trivia:"琵琶湖は日本でいちばん大きな湖。滋賀県の約6分の1が湖だよ！" },
+  "京都府":  { en:"KYOTO",     foods:["京料理","湯どうふ","おばんざい","抹茶スイーツ"],             sights:["金閣寺","嵐山","伏見稲荷大社","清水寺"],           trivia:"1200年以上も日本の都がおかれた歴史の都。世界遺産が17もあるよ！" },
+  "大阪府":  { en:"OSAKA",     foods:["たこ焼き","お好み焼き","串カツ"],                           sights:["大阪城","道頓堀","USJ"],                           trivia:"「天下の台所」と呼ばれた商人のまち。漫才文化のふるさとでもあるよ。" },
+  "兵庫県":  { en:"HYOGO",     foods:["神戸牛","明石焼き","そうめん"],                             sights:["姫路城","有馬温泉","神戸港","淡路島"],             trivia:"姫路城は「白鷺城」ともよばれる白いお城。日本で最初の世界遺産のひとつだよ。" },
+  "奈良県":  { en:"NARA",      foods:["柿の葉ずし","三輪そうめん","葛もち"],                       sights:["東大寺","奈良公園のシカ","春日大社"],              trivia:"奈良公園には野生のシカが約1000頭！シカは国の天然記念物だよ。" },
+  "和歌山県":{ en:"WAKAYAMA",  foods:["紀州梅","クエなべ","しらす丼"],                             sights:["高野山","熊野古道","白浜温泉","那智の滝"],          trivia:"梅の生産量は日本一！高野山は1200年以上前につくられた仏教の聖地だよ。" },
+  "鳥取県":  { en:"TOTTORI",   foods:["松葉ガニ","とうふちくわ","二十世紀梨"],                      sights:["鳥取砂丘","大山","水木しげるロード"],              trivia:"日本でゆいいつの大きな砂丘がある県。たて2.4km、よこ16kmもあるよ！" },
+  "島根県":  { en:"SHIMANE",   foods:["出雲そば","しじみ","のどぐろ"],                             sights:["出雲大社","石見銀山","松江城"],                    trivia:"出雲大社は縁結びの神様がいる神社として有名だよ。" },
+  "岡山県":  { en:"OKAYAMA",   foods:["祭りずし","桃","マスカット"],                               sights:["倉敷美観地区","後楽園","岡山城"],                  trivia:"晴れの日が多い「晴れの国おかやま」。日照時間は全国トップクラスだよ。" },
+  "広島県":  { en:"HIROSHIMA", foods:["広島お好み焼き","カキ","あなご"],                           sights:["広島平和記念公園","厳島神社","尾道"],              trivia:"厳島神社の大鳥居は海の上にたっているよ。世界遺産に登録されているよ。" },
+  "山口県":  { en:"YAMAGUCHI", foods:["ふぐ料理","瓦そば","外郎（ういろう）"],                     sights:["秋吉台・秋芳洞","角島大橋","萩の古い町並み"],      trivia:"フグ料理の発祥の地！下関では「ふく」と呼んで親しまれているよ。" },
+  "徳島県":  { en:"TOKUSHIMA", foods:["鳴門金時","徳島ラーメン","すだち"],                         sights:["鳴門のうず潮","祖谷のかずら橋","阿波踊り会館"],    trivia:"阿波踊りは400年以上の歴史があるおまつり。日本三大盆踊りのひとつだよ。" },
+  "香川県":  { en:"KAGAWA",    foods:["讃岐うどん","骨付鳥","オリーブ牛"],                         sights:["金刀比羅宮","直島","栗林公園","小豆島"],           trivia:"人口あたりのうどん屋さんの数が日本一！「うどん県」で有名だよ。" },
+  "愛媛県":  { en:"EHIME",     foods:["鯛めし","じゃこ天","みかん"],                               sights:["道後温泉","松山城","しまなみ海道"],                trivia:"みかんの生産量は全国2位。道後温泉は日本最古クラスの温泉として有名だよ。" },
+  "高知県":  { en:"KOCHI",     foods:["かつおのたたき","皿鉢料理","ゆず"],                         sights:["桂浜","高知城","四万十川","足摺岬"],               trivia:"四万十川は「日本最後の清流」。全長196kmのとってもきれいな川だよ。" },
+  "福岡県":  { en:"FUKUOKA",   foods:["博多ラーメン","もつ鍋","明太子","水炊き"],                   sights:["太宰府天満宮","博多ぎおん山笠","門司港レトロ"],    trivia:"九州でいちばん大きな都市・福岡市がある県。アジアに近いよ。" },
+  "佐賀県":  { en:"SAGA",      foods:["呼子のイカ","佐賀牛","シシリアンライス"],                    sights:["吉野ヶ里遺跡","有田陶器市","唐津城"],             trivia:"有田焼は400年の歴史がある焼きもの。ヨーロッパにも輸出されていたよ。" },
+  "長崎県":  { en:"NAGASAKI",  foods:["ちゃんぽん","皿うどん","カステラ"],                         sights:["軍艦島","グラバー園","長崎ランタンフェスティバル"], trivia:"島の数が日本一（971島）！むかし外国との貿易がゆるされていた特別な場所だよ。" },
+  "熊本県":  { en:"KUMAMOTO",  foods:["馬さし","辛子れんこん","太平燕"],                           sights:["熊本城","阿蘇山","黒川温泉","天草"],               trivia:"阿蘇山は世界最大クラスのカルデラをもつ火山。今も活動中だよ！" },
+  "大分県":  { en:"OITA",      foods:["とり天","関サバ・関アジ","やせうま"],                       sights:["別府温泉","由布院","宇佐神宮"],                    trivia:"温泉の湧き出る量・泉源数がともに全国1位！「おんせん県おおいた」だよ。" },
+  "宮崎県":  { en:"MIYAZAKI",  foods:["チキン南蛮","冷や汁","肉巻きおにぎり"],                     sights:["高千穂峡","青島","都井岬"],                        trivia:"日照時間が長くあたたかい「太陽の国」。プロ野球キャンプ地でも有名だよ。" },
+  "鹿児島県":{ en:"KAGOSHIMA", foods:["黒豚しゃぶしゃぶ","さつま揚げ","鶏飯"],                    sights:["桜島","屋久島","知覧"],                            trivia:"屋久島には1000年以上生きている「屋久杉」がある。世界遺産だよ！" },
+  "沖縄県":  { en:"OKINAWA",   foods:["ゴーヤチャンプルー","ソーキそば","海ぶどう","タコライス"],  sights:["首里城","美ら海水族館","古宇利島","竹富島"],       trivia:"日本でゆいいつ熱帯に近い気候の県。琉球文化ときれいなサンゴ礁が魅力だよ。" }
+};
+
+// ════════════════════════════════════════
+//  初期化
+// ════════════════════════════════════════
+const W      = window.innerWidth;
+const H      = window.innerHeight;
+const TRAY_H = 140;
+const MAP_H  = H - TRAY_H;
+
+// 地図 SVG
+const mapSvg = d3.select("#map-svg").attr("width", W).attr("height", MAP_H);
+const mapG   = mapSvg.append("g");
+const bgG    = mapG.append("g");   // 背景シルエット
+const placedG= mapG.append("g");   // 正解済み
+
+// 地図の projection（地図エリア高さ基準）
+const projection = d3.geoMercator()
+  .center([137.5, 38.0])
+  .scale(W * 3.5)
+  .translate([W / 2, MAP_H / 2.2]);
+const geoPath = d3.geoPath().projection(projection);
+
+// ── d3.zoom を #map-area にだけ適用（ピースdivとは完全分離） ──
+const mapArea = document.getElementById("map-area");
+const zoom = d3.zoom().scaleExtent([0.4, 10])
+  .on("zoom", e => mapG.attr("transform", e.transform));
+d3.select(mapArea).call(zoom);
+
+// ── 豆知識カード ──
+document.getElementById("card-close-btn").onclick = closeCard;
+document.getElementById("info-backdrop").onclick  = closeCard;
+function openCard(name) {
+  const info = PREF_INFO[name]; if (!info) return;
+  document.getElementById("card-name").textContent   = name;
+  document.getElementById("card-en").textContent     = info.en;
+  document.getElementById("card-trivia").textContent = info.trivia;
+  document.getElementById("card-foods").innerHTML    = info.foods .map(f=>`<span class="chip food">${f}</span>`).join("");
+  document.getElementById("card-sights").innerHTML   = info.sights.map(s=>`<span class="chip sight">${s}</span>`).join("");
+  document.getElementById("info-backdrop").classList.add("show");
+  requestAnimationFrame(() => document.getElementById("info-card").classList.add("show"));
+}
+function closeCard() {
+  document.getElementById("info-card").classList.remove("show");
+  document.getElementById("info-backdrop").classList.remove("show");
+}
+
+// ── UI ──
+const msgEl      = document.getElementById("message");
+const scoreEl    = document.getElementById("score");
+const progressEl = document.getElementById("progress");
+const dropGuide  = document.getElementById("drop-guide");
+const ghost      = document.getElementById("drag-ghost");
+const ghostSvg   = document.getElementById("ghost-svg");
+let   score      = 0;
+function setMsg(t, cls="") { msgEl.className=cls; msgEl.textContent=t; }
+
+// ════════════════════════════════════════
+//  サムネイル path 生成
+//  feature を size×size の viewBox に収める
+// ════════════════════════════════════════
+function makeThumbPath(feature, size) {
+  const bounds = geoPath.bounds(feature);
+  const bx = bounds[0][0], by = bounds[0][1];
+  const bw = Math.max(bounds[1][0] - bx, 1);
+  const bh = Math.max(bounds[1][1] - by, 1);
+  const pad = size * 0.08;
+  const s   = (size - pad*2) / Math.max(bw, bh);
+  const tx  = pad + (size - pad*2 - bw*s) / 2 - bx*s;
+  const ty  = pad + (size - pad*2 - bh*s) / 2 - by*s;
+
+  // 変換済みの path 文字列を返す
+  // geoPath の出力を変換行列で移動・スケール
+  const raw = geoPath(feature.geometry);
+  if (!raw) return "";
+  // SVG transform を path座標に焼き込む
+  const svgNS = "http://www.w3.org/2000/svg";
+  const tmpSvg  = document.createElementNS(svgNS,"svg");
+  const tmpG    = document.createElementNS(svgNS,"g");
+  tmpG.setAttribute("transform", `translate(${tx},${ty}) scale(${s})`);
+  const tmpPath = document.createElementNS(svgNS,"path");
+  tmpPath.setAttribute("d", raw);
+  tmpG.appendChild(tmpPath);
+  tmpSvg.appendChild(tmpG);
+  document.body.appendChild(tmpSvg);
+  const matrix = tmpG.getScreenCTM().inverse().multiply(tmpPath.getScreenCTM());
+  document.body.removeChild(tmpSvg);
+  // matrix を使って path を変換 — 代わりに transform 属性をそのまま使う
+  return { d: raw, tx, ty, s };
+}
+
+// ════════════════════════════════════════
+//  ドラッグシステム（ピースdiv 専用）
+//  地図エリアとは完全に分離
+// ════════════════════════════════════════
+let dragging = null;
+// { pointerId, card, feature, prefName }
+
+function onPiecePointerDown(e, card, feature, prefName) {
+  if (dragging) return;
+  e.preventDefault();
+  e.stopPropagation();
+  card.setPointerCapture(e.pointerId);
+
+  // ゴーストを作成
+  const info = makeThumbPath(feature, 100);
+  ghostSvg.innerHTML = info.d
+    ? `<g transform="translate(${info.tx},${info.ty}) scale(${info.s})">
+         <path d="${info.d}" fill="#ff4081" stroke="rgba(255,255,255,.4)" stroke-width="${1/info.s}"/>
+       </g>`
+    : "";
+
+  ghost.style.display = "block";
+  ghost.style.left    = e.clientX + "px";
+  ghost.style.top     = e.clientY + "px";
+
+  dropGuide.classList.add("active");
+  card.classList.add("dragging-src");
+
+  dragging = { pointerId: e.pointerId, card, feature, prefName };
+}
+
+function onPiecePointerMove(e) {
+  if (!dragging || dragging.pointerId !== e.pointerId) return;
+  e.preventDefault();
+  ghost.style.left = e.clientX + "px";
+  ghost.style.top  = e.clientY + "px";
+}
+
+function onPiecePointerUp(e) {
+  if (!dragging || dragging.pointerId !== e.pointerId) return;
+  e.preventDefault();
+
+  ghost.style.display = "none";
+  dropGuide.classList.remove("active");
+  dragging.card.classList.remove("dragging-src");
+
+  const cx = e.clientX, cy = e.clientY;
+  const mapRect = mapArea.getBoundingClientRect();
+
+  // 地図エリア内にドロップしたか
+  if (cx >= mapRect.left && cx <= mapRect.right &&
+      cy >= mapRect.top  && cy <= mapRect.bottom) {
+
+    // d3.zoomTransform で現在の変換を取得
+    const t = d3.zoomTransform(mapArea);
+
+    // スクリーン座標 → SVGローカル座標
+    const svgX = (cx - mapRect.left - t.x) / t.k;
+    const svgY = (cy - mapRect.top  - t.y) / t.k;
+
+    // この県の正解中心
+    const bounds   = geoPath.bounds(dragging.feature);
+    const correctX = (bounds[0][0] + bounds[1][0]) / 2;
+    const correctY = (bounds[0][1] + bounds[1][1]) / 2;
+
+    const dist = Math.hypot(svgX - correctX, svgY - correctY);
+    // スナップ閾値：ズームインしてるほど広く（50px相当をスケール逆算）
+    const thresh = 60 / t.k;
+
+    if (dist < thresh) {
+      placeCorrect(dragging.card, dragging.feature, dragging.prefName);
+    } else {
+      // 不正解：カードを戻す
+      dragging.card.style.opacity = "1";
+    }
+  } else {
+    dragging.card.style.opacity = "1";
+  }
+
+  dragging = null;
+}
+
+// ゴーストのポインターイベントは body レベルで処理
+document.addEventListener("pointermove",   onPiecePointerMove, { passive: false });
+document.addEventListener("pointerup",     onPiecePointerUp,   { passive: false });
+document.addEventListener("pointercancel", onPiecePointerUp,   { passive: false });
+
+// ════════════════════════════════════════
+//  正解処理
+// ════════════════════════════════════════
+function placeCorrect(card, feature, prefName) {
+  card.remove();
+
+  // 地図上に正解色で描画
+  placedG.append("path")
+    .datum(feature)
+    .attr("d", geoPath)
+    .attr("class","placed-path")
+    .attr("fill","#00e676")
+    .attr("fill-opacity", 0.8)
+    .style("filter","drop-shadow(0 0 5px rgba(0,230,118,.7))")
+    .on("click", () => openCard(prefName));
+
+  score++;
+  scoreEl.textContent = score;
+  progressEl.style.width = `${(score / 47) * 100}%`;
+  setMsg(`${prefName}　ピッタリ！🎉`, "ok");
+
+  if (score === 47) {
+    setTimeout(() => document.getElementById("clear-overlay").classList.add("show"), 900);
+  } else {
+    setTimeout(() => setMsg("ピースをドラッグしてはめよう！", "hint"), 1100);
+  }
+}
+
+// ════════════════════════════════════════
+//  GeoJSON 読み込み → トレイにピース生成
+// ════════════════════════════════════════
+d3.json("https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson").then(data => {
+
+  // --- 【ここから追加：東京の離島を除外する処理】 ---
+  data.features = data.features.map(f => {
+    const prefName = f.properties.nam_ja || f.properties.name_ja || f.properties.name;
+    if (prefName === "東京都") {
+      // 緯度が35.3度より北（数字が大きい）にあるポリゴンだけを残す
+      f.geometry.coordinates = f.geometry.coordinates.filter(polygon => {
+        // MultiPolygonは [ [[lng, lat], [lng, lat], ... ] ] という構造
+        // 最初の地点の緯度(lat)をチェック
+        const lat = polygon[0][0][1];
+        return lat > 35.3; 
+      });
+    }
+    return f;
+  });
+  // --- 【ここまで追加】 ---
+
+  // 背景シルエット（離島が消えたデータで描画）
+  bgG.selectAll("path").data(data.features).enter()
+    .append("path").attr("d", geoPath).attr("class","bg-map");
+
+  // トレイにピースカードを追加
+  const tray = document.getElementById("tray-inner");
+  const shuffled = [...data.features];
+  d3.shuffle(shuffled);
+
+  shuffled.forEach(feature => {
+    const prefName = feature.properties.nam_ja
+                  || feature.properties.name_ja
+                  || feature.properties.name || "？";
+
+    const card = document.createElement("div");
+    card.className = "piece-card";
+
+    // サムネイル SVG（インライン）
+    // ★ここでのサイズ計算が、離島が消えたことで「本土のみ」を基準に自動調整されます！
+    const info = makeThumbPath(feature, 60);
+    const svgEl = document.createElementNS("http://www.w3.org/2000/svg","svg");
+    svgEl.setAttribute("viewBox","0 0 60 60");
+    svgEl.setAttribute("width","60"); svgEl.setAttribute("height","60");
+    if (info.d) {
+      const g = document.createElementNS("http://www.w3.org/2000/svg","g");
+      g.setAttribute("transform",`translate(${info.tx},${info.ty}) scale(${info.s})`);
+      const p = document.createElementNS("http://www.w3.org/2000/svg","path");
+      p.setAttribute("d", info.d);
+      p.setAttribute("fill","#ff4081");
+      p.setAttribute("stroke","rgba(255,255,255,.35)");
+      p.setAttribute("stroke-width", String(1/info.s));
+      g.appendChild(p); svgEl.appendChild(g);
+    }
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "pname";
+    nameEl.textContent = prefName;
+
+    card.appendChild(svgEl);
+    card.appendChild(nameEl);
+    tray.appendChild(card);
+
+    card.addEventListener("pointerdown",
+      e => onPiecePointerDown(e, card, feature, prefName),
+      { passive: false });
+  });
+
+  setMsg("ピースをドラッグしてはめよう！", "hint");
+
+}).catch(() => {
+  setMsg("よみこみに しっぱいしました", "");
+});
+</script>
+</body>
+</html>
